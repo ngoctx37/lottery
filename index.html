@@ -1602,7 +1602,7 @@ const RAW_DATA = `
 
 // ========== STATE ==========
 let state = {
-  period: 'all',
+  period: '30',
   tab: 'overview',
   extraDraws: [],
   budget: {
@@ -1841,29 +1841,52 @@ function combinations(arr, k) {
 }
 
 function getRecommendations(ensembleScores) {
-  const top8 = ensembleScores.slice(0, 8).map(s => s.n).sort((a, b) => a - b);
   const ensembleMap = {};
   ensembleScores.forEach(s => { ensembleMap[s.n] = s.total; });
-  const allWheel = combinations(top8, 6);
-  const scored = allWheel.map(t => {
-    const sorted = [...t].sort((a, b) => a - b);
-    const ac = calcAC(sorted);
-    const sum = sorted.reduce((a, b) => a + b, 0);
-    const even = sorted.filter(n => n % 2 === 0).length;
-    const low = sorted.filter(n => n <= 28).length;
-    const valid = sum >= 130 && sum <= 200 && even >= 2 && even <= 4 && low >= 2 && low <= 4;
-    const decadeSet = new Set(sorted.map(n => Math.floor((n - 1) / 10)));
-    const diversity = decadeSet.size;
-    const ensSum = sorted.reduce((a, n) => a + (ensembleMap[n] || 0), 0);
-    const sumScore = Math.max(0, 20 - Math.abs(sum - 165) / 3);
+  
+  // Build BALANCED pool: start with top 8, force ≥3 high AND ≥3 low
+  let pool = ensembleScores.slice(0, 8).map(s => s.n);
+  const needHigh = Math.max(0, 3 - pool.filter(n => n > 28).length);
+  const needLow = Math.max(0, 3 - pool.filter(n => n <= 28).length);
+  if (needHigh > 0) {
+    pool.push(...ensembleScores.filter(s => s.n > 28 && !pool.includes(s.n)).slice(0, needHigh).map(s => s.n));
+  }
+  if (needLow > 0) {
+    pool.push(...ensembleScores.filter(s => s.n <= 28 && !pool.includes(s.n)).slice(0, needLow).map(s => s.n));
+  }
+  pool = [...new Set(pool)].sort((a, b) => a - b);
+  
+  // Score all C(pool, 6) combinations
+  const scored = combinations(pool, 6).map(t => {
+    const s = [...t].sort((a, b) => a - b);
+    const ac = calcAC(s);
+    const sm = s.reduce((a, b) => a + b, 0);
+    const even = s.filter(n => n % 2 === 0).length;
+    const low = s.filter(n => n <= 28).length;
+    const valid = sm >= 130 && sm <= 200 && even >= 2 && even <= 4 && low >= 2 && low <= 4;
+    const diversity = new Set(s.map(n => Math.floor((n - 1) / 10))).size;
+    const ensSum = s.reduce((a, n) => a + (ensembleMap[n] || 0), 0);
+    const sumScore = Math.max(0, 20 - Math.abs(sm - 165) / 3);
     const combined = ac.score + ensSum * 5 + sumScore + diversity * 2;
-    return { set: sorted, ac, sum, even, low, ensSum, diversity, combined, valid };
+    return { set: s, ac, sum: sm, even, low, ensSum, diversity, combined, valid };
   });
-  scored.sort((a, b) => b.valid - a.valid || b.combined - a.combined);
-  return { top8, all: scored, top2: scored.filter(x => x.valid).slice(0, 2),
-    budget: scored.filter(x => x.valid).slice(0, 3),
-    balanced: scored.filter(x => x.valid).slice(0, 6),
-    premium: scored.filter(x => x.valid).slice(0, 10) };
+  
+  // Sort: valid first, then by combined
+  scored.sort((a, b) => (b.valid ? 1 : 0) - (a.valid ? 1 : 0) || b.combined - a.combined);
+  let results = scored.filter(x => x.valid);
+  
+  // Fallback: if <3 valid, relax Sum to 100-250
+  if (results.length < 3) {
+    results = scored.filter(x => x.sum >= 100 && x.sum <= 250);
+  }
+  // Ultimate fallback: use all sorted by combined
+  if (results.length < 3) {
+    results = scored;
+  }
+  
+  return { top8: pool, all: results, top2: results.slice(0, 2),
+    budget: results.slice(0, 3), balanced: results.slice(0, 6),
+    premium: results.slice(0, 10) };
 }
 
 function getBonusFreq(data) {
